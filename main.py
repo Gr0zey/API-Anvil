@@ -1,19 +1,22 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import numpy as np
 from PIL import Image
+import os
 import psycopg2
 from typing import List, Dict
 from dotenv import load_dotenv
-import io
-import base64
-import os
+import logging
 
 # Charger les variables d'environnement
 load_dotenv()
 
 app = FastAPI()
+
+# Configurer le logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Configuration CORS
 app.add_middleware(
@@ -23,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration DB
+# Configuration de la DB depuis .env
 DB_CONFIG = {
     "dbname": os.getenv("DB_NAME"),
     "user": os.getenv("DB_USER"),
@@ -32,104 +35,162 @@ DB_CONFIG = {
     "port": os.getenv("DB_PORT")
 }
 
+UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
+
+# Fonction de connexion à la DB avec gestion d'erreur
 def get_db_connection():
-    return psycopg2.connect(**DB_CONFIG)
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        logger.info("Connexion à la DB réussie")
+        return conn
+    except Exception as e:
+        logger.error(f"Erreur de connexion à la DB: {e}")
+        raise HTTPException(500, detail="Database connection error")
 
+# Initialiser la table
 def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS stego_images (
-            id SERIAL PRIMARY KEY,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            message_hidden TEXT,
-            processed_image_base64 TEXT
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS steganography_images (
+                id SERIAL PRIMARY KEY,
+                original_filename VARCHAR(255),
+                processed_filename VARCHAR(255),
+                upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                message_hidden VARCHAR(255)
+            )
+        """)
+        conn.commit()
+        logger.info("Table initialisée avec succès")
+    except Exception as e:
+        logger.error(f"Erreur d'initialisation de la DB: {e}")
+    finally:
+        cur.close()
+        conn.close()
 
-def hide_message_in_image(msg: str, image_path: str) -> bytes:
-    """Retourne l'image modifiée en bytes"""
-    img = Image.open(image_path)
-    data = np.array(img)
+# Fonction de stéganographie (identique à votre code)
+def hide_message_in_image(msg: str, image_path: str, output_path: str) -> str:
+    image = Image.open(image_path)
+    data = np.array(image)
 
-    # Convertir le message en binaire
-    binary_msg = ''.join(format(ord(c), '08b') for c in msg)
-    length = format(len(binary_msg), '016b')
-    full_msg = length + binary_msg
+    final_message = ""
+    for lettre in msg:
+        position_ascii = ord(lettre)
+        binaire = bin(position_ascii)[2:]
+        while len(binaire) < 8:
+            binaire = "0" + binaire
+        final_message += binaire
 
-    # Insérer le message dans l'image
-    msg_index = 0
-    for row in data:
-        for pixel in row:
-            for color in range(3):  # R, G, B
-                if msg_index < len(full_msg):
-                    # Modifier le LSB
-                    pixel[color] = (pixel[color] & 0xFE) | int(full_msg[msg_index])
-                    msg_index += 1
-                else:
+    longueur = len(final_message)
+    binaire = bin(longueur)[2:]
+    while len(binaire) < 16:
+        binaire = "0" + binaire
+    result_message = binaire + final_message
+
+    tour = 0
+    y = 0
+    for line in data:
+        x = 0
+        for colonne in line:
+            rgb = 0
+            for couleur in colonne:
+                valeur = data[y][x][rgb]
+                binaire = bin(valeur)[2:]
+                binaire_list = list(binaire)
+                del binaire_list[-1]
+                binaire_list.append(result_message[tour])
+                decimal = int("".join(binaire_list), 2)
+                data[y][x][rgb] = decimal
+                tour += 1
+                rgb += 1
+                if tour >= len(result_message):
                     break
-            if msg_index >= len(full_msg):
+            x += 1
+            if tour >= len(result_message):
                 break
-        if msg_index >= len(full_msg):
+        y += 1
+        if tour >= len(result_message):
             break
 
-    # Convertir en bytes
-    output = io.BytesIO()
-    Image.fromarray(data).save(output, format="JPG")
-    return output.getvalue()
+    image_finale = Image.fromarray(data)
+    image_finale.save(output_path)
+    return output_path
 
+# Initialiser la DB au démarrage
 init_db()
 
-@app.post("/process/")
-def process_image():
+@app.post("/upload/")
+async def upload_image(file: UploadFile = File(...)):
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(400, detail="Le fichier doit être une image")
+
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    original_filename = f"{UPLOAD_FOLDER}/original_{timestamp}_{file.filename}"
+    processed_filename = f"{UPLOAD_FOLDER}/secret_{timestamp}.png"
+
     try:
-        # Chemin vers l'image (même dossier que le code)
-        image_path = "image.jpg"
-        
-        # Vérifier si l'image existe
-        try:
-            with open(image_path, "rb") as f:
-                pass
-        except FileNotFoundError:
-            raise HTTPException(404, detail="image.jpg non trouvée dans le dossier courant")
+        # Sauvegarder l'image originale
+        with open(original_filename, "wb") as buffer:
+            buffer.write(await file.read())
 
-        # Générer un message (timestamp)
-        timestamp = datetime.now().isoformat()
-        
-        # Traiter l'image
-        processed_image_bytes = hide_message_in_image(timestamp, image_path)
-        image_base64 = base64.b64encode(processed_image_bytes).decode('utf-8')
+        # Cacher le timestamp
+        hide_message_in_image(timestamp, original_filename, processed_filename)
 
-        # Sauvegarder en DB
+        # Sauvegarder dans la DB
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO stego_images (message_hidden, processed_image_base64) VALUES (%s, %s) RETURNING id",
-            (timestamp, image_base64)
+            """INSERT INTO steganography_images 
+            (original_filename, processed_filename, message_hidden) 
+            VALUES (%s, %s, %s) RETURNING id""",
+            (original_filename, processed_filename, timestamp)
         )
-        record_id = cur.fetchone()[0]
+        image_id = cur.fetchone()[0]
         conn.commit()
 
         return {
-            "id": record_id,
-            "message": "Image traitée avec succès",
-            "timestamp": timestamp,
-            "image_base64": image_base64[:50] + "..."  # Aperçu
+            "id": image_id,
+            "original_filename": original_filename,
+            "processed_filename": processed_filename,
+            "message_hidden": timestamp
         }
-
     except Exception as e:
+        logger.error(f"Erreur lors du traitement: {e}")
         raise HTTPException(500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
 
-@app.get("/results/")
-def get_results():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, created_at, message_hidden FROM stego_images ORDER BY created_at DESC")
-    results = cur.fetchall()
-    return [
-        {"id": r[0], "created_at": r[1], "message": r[2]}
-        for r in results
-    ]
+@app.get("/images/")
+def list_images() -> List[Dict]:
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, original_filename, processed_filename, 
+                   upload_time, message_hidden 
+            FROM steganography_images
+        """)
+        return [
+            {
+                "id": img[0],
+                "original_filename": img[1],
+                "processed_filename": img[2],
+                "upload_time": img[3],
+                "message_hidden": img[4]
+            }
+            for img in cur.fetchall()
+        ]
+    except Exception as e:
+        logger.error(f"Erreur DB: {e}")
+        raise HTTPException(500, detail="Database error")
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/")
+def read_root():
+    return {"message": "API de stéganographie"}
