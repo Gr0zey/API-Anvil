@@ -1,6 +1,9 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from datetime import datetime
+from pathlib import Path
 import numpy as np
 from PIL import Image
 import os
@@ -37,6 +40,9 @@ DB_CONFIG = {
 
 UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
 
+# Servir les fichiers statiques
+app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
+
 # Fonction de connexion à la DB avec gestion d'erreur
 def get_db_connection():
     try:
@@ -66,10 +72,12 @@ def init_db():
     except Exception as e:
         logger.error(f"Erreur d'initialisation de la DB: {e}")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
 
-# Fonction de stéganographie (identique à votre code)
+# Fonction de stéganographie
 def hide_message_in_image(msg: str, image_path: str, output_path: str) -> str:
     image = Image.open(image_path)
     data = np.array(image)
@@ -155,14 +163,25 @@ async def upload_image(file: UploadFile = File(...)):
             "id": image_id,
             "original_filename": original_filename,
             "processed_filename": processed_filename,
-            "message_hidden": timestamp
+            "message_hidden": timestamp,
+            "download_url": f"/download/{Path(processed_filename).name}"
         }
     except Exception as e:
         logger.error(f"Erreur lors du traitement: {e}")
         raise HTTPException(500, detail=str(e))
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    """Endpoint pour télécharger les images traitées"""
+    file_path = f"{UPLOAD_FOLDER}/{filename}"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(file_path)
 
 @app.get("/images/")
 def list_images() -> List[Dict]:
@@ -188,8 +207,10 @@ def list_images() -> List[Dict]:
         logger.error(f"Erreur DB: {e}")
         raise HTTPException(500, detail="Database error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
 
 @app.get("/")
 def read_root():
