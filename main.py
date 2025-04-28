@@ -133,7 +133,3 @@ def get_results():
         {"id": r[0], "created_at": r[1], "message": r[2]}
         for r in results
     ]
-
-if __name__ == "__main__":
-    import gunicorn
-    gunicorn.run(app, host="0.0.0.0", port=8000)
