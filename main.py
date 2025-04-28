@@ -78,7 +78,7 @@ def hide_message_in_image(msg: str, image_path: str) -> bytes:
 
     # Convertir en bytes
     output = io.BytesIO()
-    Image.fromarray(data).save(output, format="PNG")
+    Image.fromarray(data).save(output, format="JPG")
     return output.getvalue()
 
 init_db()
@@ -87,14 +87,14 @@ init_db()
 def process_image():
     try:
         # Chemin vers l'image (même dossier que le code)
-        image_path = "image.png"
+        image_path = "image.jpg"
         
         # Vérifier si l'image existe
         try:
             with open(image_path, "rb") as f:
                 pass
         except FileNotFoundError:
-            raise HTTPException(404, detail="image.png non trouvée dans le dossier courant")
+            raise HTTPException(404, detail="image.jpg non trouvée dans le dossier courant")
 
         # Générer un message (timestamp)
         timestamp = datetime.now().isoformat()
