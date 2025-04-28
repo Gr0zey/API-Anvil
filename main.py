@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from datetime import datetime
-from pathlib import Path
 import numpy as np
 from PIL import Image
 import os
@@ -11,6 +10,7 @@ import psycopg2
 from typing import List, Dict
 from dotenv import load_dotenv
 import logging
+from pathlib import Path
 
 # Charger les variables d'environnement
 load_dotenv()
@@ -39,6 +39,7 @@ DB_CONFIG = {
 }
 
 UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
+Path(UPLOAD_FOLDER).mkdir(exist_ok=True)
 
 # Servir les fichiers statiques
 app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
