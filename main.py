@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import os
 import psycopg2
+import io
 from typing import List, Dict
 from dotenv import load_dotenv
 import logging
@@ -39,7 +40,9 @@ DB_CONFIG = {
 }
 
 UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
-Path(UPLOAD_FOLDER).mkdir(exist_ok=True)
+
+# Créer le dossier uploads s'il n'existe pas
+Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
 
 # Servir les fichiers statiques
 app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
@@ -78,53 +81,59 @@ def init_db():
         if 'conn' in locals():
             conn.close()
 
-# Fonction de stéganographie
-def hide_message_in_image(msg: str, image_path: str, output_path: str) -> str:
-    image = Image.open(image_path)
-    data = np.array(image)
+# Fonction de stéganographie MODIFIÉE
+def hide_message_in_image(msg: str, image_data: bytes, output_path: str) -> str:
+    """Version modifiée pour accepter des données binaires directement"""
+    try:
+        # Créer une image à partir des données bytes
+        image = Image.open(io.BytesIO(image_data))
+        data = np.array(image)
 
-    final_message = ""
-    for lettre in msg:
-        position_ascii = ord(lettre)
-        binaire = bin(position_ascii)[2:]
-        while len(binaire) < 8:
+        final_message = ""
+        for lettre in msg:
+            position_ascii = ord(lettre)
+            binaire = bin(position_ascii)[2:]
+            while len(binaire) < 8:
+                binaire = "0" + binaire
+            final_message += binaire
+
+        longueur = len(final_message)
+        binaire = bin(longueur)[2:]
+        while len(binaire) < 16:
             binaire = "0" + binaire
-        final_message += binaire
+        result_message = binaire + final_message
 
-    longueur = len(final_message)
-    binaire = bin(longueur)[2:]
-    while len(binaire) < 16:
-        binaire = "0" + binaire
-    result_message = binaire + final_message
-
-    tour = 0
-    y = 0
-    for line in data:
-        x = 0
-        for colonne in line:
-            rgb = 0
-            for couleur in colonne:
-                valeur = data[y][x][rgb]
-                binaire = bin(valeur)[2:]
-                binaire_list = list(binaire)
-                del binaire_list[-1]
-                binaire_list.append(result_message[tour])
-                decimal = int("".join(binaire_list), 2)
-                data[y][x][rgb] = decimal
-                tour += 1
-                rgb += 1
+        tour = 0
+        y = 0
+        for line in data:
+            x = 0
+            for colonne in line:
+                rgb = 0
+                for couleur in colonne:
+                    valeur = data[y][x][rgb]
+                    binaire = bin(valeur)[2:]
+                    binaire_list = list(binaire)
+                    del binaire_list[-1]
+                    binaire_list.append(result_message[tour])
+                    decimal = int("".join(binaire_list), 2)
+                    data[y][x][rgb] = decimal
+                    tour += 1
+                    rgb += 1
+                    if tour >= len(result_message):
+                        break
+                x += 1
                 if tour >= len(result_message):
                     break
-            x += 1
+            y += 1
             if tour >= len(result_message):
                 break
-        y += 1
-        if tour >= len(result_message):
-            break
 
-    image_finale = Image.fromarray(data)
-    image_finale.save(output_path)
-    return output_path
+        image_finale = Image.fromarray(data)
+        image_finale.save(output_path)
+        return output_path
+    except Exception as e:
+        logger.error(f"Erreur dans hide_message_in_image: {str(e)}")
+        raise
 
 # Initialiser la DB au démarrage
 init_db()
@@ -141,12 +150,15 @@ async def upload_image(file: UploadFile = File(...)):
     processed_filename = f"{UPLOAD_FOLDER}/secret_{timestamp}.png"
 
     try:
+        # Lire les données de l'image
+        image_data = await file.read()
+
         # Sauvegarder l'image originale
         with open(original_filename, "wb") as buffer:
-            buffer.write(await file.read())
+            buffer.write(image_data)
 
-        # Cacher le timestamp
-        hide_message_in_image(timestamp, original_filename, processed_filename)
+        # Cacher le timestamp (en passant directement les bytes)
+        hide_message_in_image(timestamp, image_data, processed_filename)
 
         # Sauvegarder dans la DB
         conn = get_db_connection()
