@@ -138,6 +138,23 @@ def hide_message_in_image(msg: str, image_data: bytes, output_path: str) -> str:
 # Initialiser la DB au démarrage
 init_db()
 
+@app.get("/message/{image_id}")
+async def get_hidden_message(image_id: int):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT message_hidden FROM steganography_images 
+            WHERE id = %s
+        """, (image_id,))
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(404, detail="Image not found")
+        return {"hidden_message": result[0]}
+    finally:
+        cur.close()
+        conn.close()
+
 @app.post("/upload/")
 async def upload_image(file: UploadFile = File(...)):
     if not file.content_type.startswith('image/'):
